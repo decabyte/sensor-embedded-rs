@@ -12,7 +12,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::{Config, clock::CpuClock, peripherals::RMT, rmt::Rmt, time::Rate};
+use esp_hal::{Config, clock::CpuClock, rmt::Rmt, time::Rate};
 
 use panic_rtt_target as _;
 

@@ -4,17 +4,18 @@ name = "sensor-embedded-rs"
 rust-version = "1.92"
 version = "0.1.0"
 
+[lib]
+test = false    # could be enabled later to run normal tests using host toolchain
+
 [[bin]]
 name = "embedded"
 path = "./src/bin/main.rs"
 test = false
 
 [[test]]
-harness = false
 name = "hello_test"
-
-[lib]
-test = false
+harness = false
+test = false    # disabled for now so `cargo test` in `pre-commit` doesn't run automatically
 
 [dependencies]
 esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
