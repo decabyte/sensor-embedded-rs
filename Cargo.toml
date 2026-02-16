@@ -18,24 +18,17 @@ harness = false
 test = false    # disabled for now so `cargo test` in `pre-commit` doesn't run automatically
 
 [dependencies]
-esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
-
-esp-rtos = { version = "0.2.0", features = [
-    "defmt",
-    "embassy",
-    "esp-alloc",
-    "esp-radio",
-    "esp32c6",
-] }
-
+critical-section = "1.2.0"
+static_cell = "2.1.1"
 defmt = "1.0.1"
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
-
-bt-hci = "0.6.0"
+panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+rtt-target = { version = "0.6.2", features = ["defmt"] }
 embassy-executor = { version = "0.9.1", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32c6"] }
+esp-hal = { version = "~1.0", features = ["defmt", "esp32c6", "unstable"] }
 esp-alloc = { version = "0.9.0", features = ["defmt"] }
 esp-radio = { version = "0.17.0", features = [
     "ble",
@@ -44,12 +37,15 @@ esp-radio = { version = "0.17.0", features = [
     "esp32c6",
     "unstable",
 ] }
-panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
-rtt-target = { version = "0.6.2", features = ["defmt"] }
-trouble-host = { version = "0.5.0", features = ["gatt"] }
-
-critical-section = "1.2.0"
-static_cell = "2.1.1"
+esp-rtos = { version = "0.2.0", features = [
+    "defmt",
+    "embassy",
+    "esp-alloc",
+    "esp-radio",
+    "esp32c6",
+] }
+bt-hci = "0.8.0"
+trouble-host = { version = "0.6.0", features = ["gatt"] }
 
 # extra dependencies
 smart-leds = "0.4.0"
