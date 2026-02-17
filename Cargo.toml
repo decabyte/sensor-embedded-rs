@@ -44,8 +44,18 @@ esp-rtos = { version = "0.2.0", features = [
     "esp-radio",
     "esp32c6",
 ] }
-bt-hci = "0.8.0"
-trouble-host = { version = "0.6.0", features = ["gatt"] }
+
+# this is pinned to 0.5.0 due to compatibility issues
+trouble-host = { version = "0.5.0", features = [
+    "defmt",
+    "derive",
+    "default-packet-pool-mtu-255",
+    "gatt",
+    "peripheral"
+] }
+
+# this is disabled because of the above
+# bt-hci = "0.8.0"
 
 # extra dependencies
 smart-leds = "0.4.0"
