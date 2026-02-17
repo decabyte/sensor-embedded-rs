@@ -22,29 +22,23 @@ use smart_leds::{
     hsv::{Hsv, hsv2rgb},
 };
 
-// use esp_radio::ble::controller::BleConnector;
+use esp_radio::ble::controller::BleConnector;
+use trouble_host::prelude::*;
 // use bt_hci::controller::ExternalController;
-// use trouble_host::prelude::*;
 
 extern crate alloc;
 
 // Constants
-// const CONNECTIONS_MAX: usize = 1;
-// const L2CAP_CHANNELS_MAX: usize = 1;
+const CONNECTIONS_MAX: usize = 1;
+const L2CAP_CHANNELS_MAX: usize = 1;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
 
 // More information: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
-// More esp-hal examples: https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
 
-#[embassy_executor::task]
-async fn run() {
-    loop {
-        info!("Task!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
-}
+// More esp-hal examples: https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
+// More esp-hal / ble examples: https://github.com/esp-rs/esp-hal/blob/1.0.0/examples/ble/bas_peripheral/src/main.rs
 
 #[allow(
     clippy::large_stack_frames,
@@ -66,15 +60,29 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    // let radio_init = esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller");
-    // // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
-    // let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
-    // let ble_controller = ExternalController::<_, 1>::new(transport);
-    // let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-    //     HostResources::new();
-    // let _stack = trouble_host::new(ble_controller, &mut resources);
+    // Initialize radio stack
+    let radio_init = esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller");
 
-    // init RMT and SmartLed
+    // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
+    let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
+    let ble_controller = ExternalController::<_, 1>::new(transport);
+
+    let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
+    info!("Our address = {:?}", address);
+
+    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
+        HostResources::new();
+    let stack = trouble_host::new(ble_controller, &mut resources).set_random_address(address);
+
+    let Host {
+        mut peripheral,
+        runner,
+        ..
+    } = stack.build();
+
+    // TODO: see exam
+
+    // Initialize RMT and SmartLed
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .expect("Failed to initialize RMT")
         .into_async();
@@ -87,6 +95,7 @@ async fn main(spawner: Spawner) -> ! {
     // Use `spawner` to launch tasks.
     spawner.spawn(run()).ok();
 
+    // Light task
     let mut color = Hsv {
         hue: 0,
         sat: 255,
@@ -114,8 +123,17 @@ async fn main(spawner: Spawner) -> ! {
         }
     }
 
+    // Otherwise main loop
     // loop {
     //     info!("Main!");
     //     Timer::after(Duration::from_secs(5)).await;
     // }
+}
+
+#[embassy_executor::task]
+async fn run() {
+    loop {
+        info!("Task!");
+        Timer::after(Duration::from_secs(1)).await;
+    }
 }
