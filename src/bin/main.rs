@@ -12,6 +12,7 @@ use panic_rtt_target as _;
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
+use static_cell::StaticCell;
 
 use esp_alloc as _;
 use esp_hal::gpio::AnyPin;
@@ -33,19 +34,36 @@ extern crate alloc;
 
 // Constants
 const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
+const L2CAP_CHANNELS_MAX: usize = 2;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-// More information: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
+// #[gatt_server]
+// struct BLEServer {
+//     battery_service: BatteryService,
+// }
 
-// More esp-hal examples: https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
-// More esp-hal / ble examples: https://github.com/esp-rs/esp-hal/blob/1.0.0/examples/ble/bas_peripheral/src/main.rs
+// #[gatt_service(uuid = service::BATTERY)]
+// struct BatteryService {
+//     #[descriptor(uuid = descriptors::VALID_RANGE, read, value = [0, 100])]
+//     #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "level", read, value = "Battery Level")]
+//     #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 10)]
+//     level: u8,
+
+//     #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "connected", read, value = "Battery Presence")]
+//     #[characteristic(
+//         uuid = "408813df-5dd4-1f87-ec11-cdb001100000",
+//         read,
+//         notify,
+//         value = false
+//     )]
+//     connected: bool,
+// }
 
 #[allow(
     clippy::large_stack_frames,
-    reason = "it's not unusual to allocate larger buffers etc. in main"
+    reason = "it's not unusual to allocate larger buffers in main"
 )]
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -64,14 +82,16 @@ async fn main(spawner: Spawner) -> ! {
     info!("Embassy initialized!");
 
     // Initialize radio stack
-    let radio_init = esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller");
+    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
+    let radio_init =
+        RADIO.init(esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller"));
 
-    // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
-    let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
+    // Initialize BLE stack
+    let transport = BleConnector::new(radio_init, peripherals.BT, Default::default()).unwrap();
     let ble_controller = ExternalController::<_, 1>::new(transport);
 
     let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
-    info!("Our address = {:?}", address);
+    info!("BLE device address = {:?}", address);
 
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
@@ -83,13 +103,27 @@ async fn main(spawner: Spawner) -> ! {
         ..
     } = stack.build();
 
+    // static RUNNER: StaticCell<
+    //     Runner<'static, ExternalController<BleConnector<'static>, 1>, DefaultPacketPool>,
+    // > = StaticCell::new();
+    // let ble_runner = RUNNER.init(runner);
+
+    // info!("Starting advertising and GATT service");
+    // let server = BLEServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+    //     name: "SensorBLE",
+    //     appearance: &appearance::sensor::MULTI_SENSOR,
+    // }))
+    // .expect("Failed at starting GATT service");
+
+    // spawner.must_spawn(ble_task(runner));
+
     // Initialize RMT and SmartLed
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .expect("Failed to initialize RMT")
         .into_async();
 
     // Use `spawner` to launch tasks.
-    spawner.spawn(main_task()).ok();
+    spawner.spawn(extra_task()).ok();
     spawner.spawn(led_task(rmt, peripherals.GPIO8.into())).ok();
 
     loop {
@@ -99,12 +133,32 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn main_task() {
+async fn extra_task() {
     loop {
         info!("Task!");
         Timer::after(Duration::from_secs(1)).await;
     }
 }
+
+#[allow(clippy::large_stack_frames)]
+#[embassy_executor::task]
+async fn ble_task(
+    mut runner: Runner<'static, ExternalController<BleConnector<'static>, 1>, DefaultPacketPool>,
+) {
+    _ = runner.run().await;
+}
+
+/// Alternative with StaticCell:
+// #[embassy_executor::task]
+// async fn ble_task(
+//     runner: &'static mut Runner<
+//         'static,
+//         ExternalController<BleConnector<'static>, 1>,
+//         DefaultPacketPool,
+//     >,
+// ) {
+//     _ = runner.run().await;
+// }
 
 #[embassy_executor::task]
 async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
@@ -150,3 +204,9 @@ async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
         Timer::after_millis(200).await;
     }
 }
+
+// References:
+// - app_image_format: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description
+// - esp-hal examples: https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
+// - esp-hal ble examples: https://github.com/esp-rs/esp-hal/blob/1.0.0/examples/ble/bas_peripheral/src/main.rs
+// - trouble examples: https://github.com/embassy-rs/trouble/tree/main/examples/esp32
