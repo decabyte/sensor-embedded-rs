@@ -7,14 +7,17 @@
     holding buffers for the duration of a data transfer."
 )]
 
+use panic_rtt_target as _;
+
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
+
+use esp_alloc as _;
+use esp_hal::gpio::AnyPin;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{Config, clock::CpuClock, rmt::Rmt, time::Rate};
-
-use panic_rtt_target as _;
 
 use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
 use smart_leds::{
@@ -80,30 +83,52 @@ async fn main(spawner: Spawner) -> ! {
         ..
     } = stack.build();
 
-    // TODO: see exam
-
     // Initialize RMT and SmartLed
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .expect("Failed to initialize RMT")
         .into_async();
 
-    let rmt_channel = rmt.channel0;
-    let mut rmt_buffer = [esp_hal::rmt::PulseCode::default(); buffer_size_async(1)];
-
-    let mut led = SmartLedsAdapterAsync::new(rmt_channel, peripherals.GPIO8, &mut rmt_buffer);
-
     // Use `spawner` to launch tasks.
-    spawner.spawn(run()).ok();
+    spawner.spawn(main_task()).ok();
+    spawner.spawn(led_task(rmt, peripherals.GPIO8.into())).ok();
 
-    // Light task
+    loop {
+        info!("Tick!");
+        Timer::after(Duration::from_secs(5)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn main_task() {
+    loop {
+        info!("Task!");
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
+    let mut rmt_buffer = [esp_hal::rmt::PulseCode::default(); buffer_size_async(1)];
+    let mut led = SmartLedsAdapterAsync::new(rmt.channel0, pin, &mut rmt_buffer);
+
+    let level = 10;
     let mut color = Hsv {
         hue: 0,
         sat: 255,
         val: 255,
     };
-    let mut data: RGB8;
-    let level = 10;
+    let mut data: RGB8 = hsv2rgb(color);
 
+    // led init sequence
+    for n in 0..10 {
+        let init_level = if (n % 2) == 0 { level } else { 0 };
+        _ = led
+            .write(brightness(gamma([data].into_iter()), init_level))
+            .await;
+        Timer::after_millis(200).await;
+    }
+
+    // led main loop
     loop {
         for hue in 0..=255 {
             color.hue = hue;
@@ -115,25 +140,13 @@ async fn main(spawner: Spawner) -> ! {
             // When sending to the LED, we do a gamma correction first (see smart_leds
             // documentation for details) and then limit the brightness to 10 out of 255 so
             // that the output is not too bright.
-            led.write(brightness(gamma([data].into_iter()), level))
-                .await
-                .unwrap();
+            _ = led
+                .write(brightness(gamma([data].into_iter()), level))
+                .await;
 
-            Timer::after(Duration::from_millis(50)).await;
+            Timer::after_millis(50).await;
         }
-    }
 
-    // Otherwise main loop
-    // loop {
-    //     info!("Main!");
-    //     Timer::after(Duration::from_secs(5)).await;
-    // }
-}
-
-#[embassy_executor::task]
-async fn run() {
-    loop {
-        info!("Task!");
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after_millis(200).await;
     }
 }
