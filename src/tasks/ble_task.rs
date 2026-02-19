@@ -1,4 +1,7 @@
 use defmt::{info, warn};
+use static_cell::StaticCell;
+
+use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_radio::ble::controller::BleConnector;
 
@@ -8,7 +11,7 @@ use trouble_host::prelude::*;
 use crate::app::{AppCommand, AppConfig, AppMode, CMD_CHANNEL, STATE_WATCH};
 
 const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
+const L2CAP_CHANNELS_MAX: usize = 2;
 
 // ── GATT Server definition ─────────────────────────────────────────────────
 //
@@ -51,22 +54,46 @@ struct StatusService {
     mode: u8,
 }
 
-// ── Task ───────────────────────────────────────────────────────────────────
+static RESOURCES: StaticCell<
+    HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX>,
+> = StaticCell::new();
+static STACK: StaticCell<
+    Stack<'static, ExternalController<BleConnector<'static>, 2>, DefaultPacketPool>,
+> = StaticCell::new();
+static RUNNER: StaticCell<
+    Runner<'static, ExternalController<BleConnector<'static>, 2>, DefaultPacketPool>,
+> = StaticCell::new();
 
 #[embassy_executor::task]
-pub async fn ble_task(connector: BleConnector<'static>) -> ! {
-    let ble_controller: ExternalController<_, 1> = ExternalController::new(connector);
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
+async fn ble_runner_task(
+    runner: &'static mut Runner<
+        'static,
+        ExternalController<BleConnector<'static>, 2>,
+        DefaultPacketPool,
+    >,
+) {
+    let _ = runner.run().await;
+}
 
-    let stack = trouble_host::new(ble_controller, &mut resources)
+#[embassy_executor::task]
+pub async fn ble_task(spawner: Spawner, connector: BleConnector<'static>) -> ! {
+    let ble_controller: ExternalController<_, 2> = ExternalController::new(connector);
+
+    let resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
+        HostResources::new();
+    let resources = RESOURCES.init(resources);
+
+    let stack = trouble_host::new(ble_controller, resources)
         .set_random_address(Address::random([0xde, 0xad, 0xbe, 0xef, 0x01, 0x02]));
+    let stack = STACK.init(stack);
 
     let Host {
         mut peripheral,
-        mut runner,
+        runner,
         ..
     } = stack.build();
+
+    let runner = RUNNER.init(runner);
 
     let gap = GapConfig::Peripheral(PeripheralConfig {
         name: "SensorEmbedded",
@@ -80,139 +107,126 @@ pub async fn ble_task(connector: BleConnector<'static>) -> ! {
 
     info!("[ble] started");
 
-    embassy_futures::join::join(
-        // Arm 1: drive the HCI host runner forever
-        async {
-            let _ = runner.run().await;
-            // runner.run() only returns on error; log and hang
-            warn!("[ble] runner exited");
-            core::future::pending::<()>().await;
-        },
-        // Arm 2: advertising + GATT connection loop
-        async {
-            loop {
-                // Only advertise when not Idle
-                loop {
-                    let state = rx.changed().await;
-                    if state.mode != AppMode::Idle {
-                        break;
-                    }
-                    info!("[ble] idle — not advertising");
+    spawner.must_spawn(ble_runner_task(runner));
+
+    loop {
+        // Only advertise when not Idle
+        loop {
+            let state = rx.changed().await;
+            if state.mode != AppMode::Idle {
+                break;
+            }
+            info!("[ble] idle — not advertising");
+        }
+
+        info!("[ble] starting advertisement");
+
+        let mut adv_data = [0u8; 31];
+        let adv_len = AdStructure::encode_slice(
+            &[
+                AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                AdStructure::CompleteLocalName(b"SensorEmbedded"),
+            ],
+            &mut adv_data,
+        )
+        .unwrap_or(0);
+
+        let acceptor = match peripheral
+            .advertise(
+                &Default::default(),
+                Advertisement::ConnectableScannableUndirected {
+                    adv_data: &adv_data[..adv_len],
+                    scan_data: &[],
+                },
+            )
+            .await
+        {
+            Ok(a) => a,
+            Err(_) => {
+                warn!("[ble] advertise error");
+                continue;
+            }
+        };
+
+        let conn = match acceptor.accept().await {
+            Ok(c) => c,
+            Err(_) => {
+                warn!("[ble] accept error");
+                continue;
+            }
+        };
+
+        let conn = match conn.with_attribute_server(&server) {
+            Ok(c) => c,
+            Err(_) => {
+                warn!("[ble] with_attribute_server error");
+                continue;
+            }
+        };
+
+        info!("[ble] connected");
+
+        // Notify current mode immediately
+        if let Some(state) = rx.try_changed() {
+            let byte = state.mode.to_byte();
+            let _ = server.status_svc.mode.notify(&conn, &byte).await;
+        }
+
+        let mut ssid_buf = [0u8; 32];
+        let mut pass_buf = [0u8; 64];
+        let mut ssid_len = 0usize;
+
+        loop {
+            match conn.next().await {
+                GattConnectionEvent::Disconnected { reason: _ } => {
+                    info!("[ble] disconnected");
+                    break;
                 }
+                GattConnectionEvent::Gatt {
+                    event: GattEvent::Write(event),
+                } => {
+                    let handle = event.handle();
+                    event.accept().unwrap().send().await;
 
-                info!("[ble] starting advertisement");
+                    if handle == server.config_svc.ssid.handle {
+                        let val: heapless::Vec<u8, 32> = server
+                            .table()
+                            .get(&server.config_svc.ssid)
+                            .unwrap_or_default();
+                        ssid_len = val.len().min(32);
+                        ssid_buf[..ssid_len].copy_from_slice(&val[..ssid_len]);
+                        info!("[ble] SSID written ({} bytes)", ssid_len);
+                    } else if handle == server.config_svc.password.handle {
+                        let val: heapless::Vec<u8, 64> = server
+                            .table()
+                            .get(&server.config_svc.password)
+                            .unwrap_or_default();
+                        let pass_len = val.len().min(64);
+                        pass_buf[..pass_len].copy_from_slice(&val[..pass_len]);
+                        info!("[ble] password written ({} bytes)", pass_len);
 
-                let mut adv_data = [0u8; 31];
-                let adv_len = AdStructure::encode_slice(
-                    &[
-                        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                        AdStructure::CompleteLocalName(b"channels"),
-                    ],
-                    &mut adv_data,
-                )
-                .unwrap_or(0);
-
-                let acceptor = match peripheral
-                    .advertise(
-                        &Default::default(),
-                        Advertisement::ConnectableScannableUndirected {
-                            adv_data: &adv_data[..adv_len],
-                            scan_data: &[],
-                        },
-                    )
-                    .await
-                {
-                    Ok(a) => a,
-                    Err(_) => {
-                        warn!("[ble] advertise error");
-                        continue;
+                        // Both credentials received — push config + request Connected
+                        let mut config = AppConfig::default();
+                        config.wifi_ssid[..ssid_len].copy_from_slice(&ssid_buf[..ssid_len]);
+                        config.wifi_pass[..pass_len].copy_from_slice(&pass_buf[..pass_len]);
+                        CMD_CHANNEL.send(AppCommand::UpdateConfig(config)).await;
+                        CMD_CHANNEL
+                            .send(AppCommand::SetMode(AppMode::Connected))
+                            .await;
                     }
-                };
-
-                let conn = match acceptor.accept().await {
-                    Ok(c) => c,
-                    Err(_) => {
-                        warn!("[ble] accept error");
-                        continue;
-                    }
-                };
-
-                let conn = match conn.with_attribute_server(&server) {
-                    Ok(c) => c,
-                    Err(_) => {
-                        warn!("[ble] with_attribute_server error");
-                        continue;
-                    }
-                };
-
-                info!("[ble] connected");
-
-                // Notify current mode immediately
-                if let Some(state) = rx.try_changed() {
-                    let byte = state.mode.to_byte();
-                    let _ = server.status_svc.mode.notify(&conn, &byte).await;
                 }
+                _ => {}
+            }
 
-                let mut ssid_buf = [0u8; 32];
-                let mut pass_buf = [0u8; 64];
-                let mut ssid_len = 0usize;
+            // Send status notification on mode change
+            if let Some(state) = rx.try_changed() {
+                let byte = state.mode.to_byte();
+                let _ = server.status_svc.mode.notify(&conn, &byte).await;
 
-                loop {
-                    match conn.next().await {
-                        GattConnectionEvent::Disconnected { reason: _ } => {
-                            info!("[ble] disconnected");
-                            break;
-                        }
-                        GattConnectionEvent::Gatt {
-                            event: GattEvent::Write(event),
-                        } => {
-                            let handle = event.handle();
-                            event.accept().unwrap().send().await;
-
-                            if handle == server.config_svc.ssid.handle {
-                                let val: heapless::Vec<u8, 32> = server
-                                    .table()
-                                    .get(&server.config_svc.ssid)
-                                    .unwrap_or_default();
-                                ssid_len = val.len().min(32);
-                                ssid_buf[..ssid_len].copy_from_slice(&val[..ssid_len]);
-                                info!("[ble] SSID written ({} bytes)", ssid_len);
-                            } else if handle == server.config_svc.password.handle {
-                                let val: heapless::Vec<u8, 64> = server
-                                    .table()
-                                    .get(&server.config_svc.password)
-                                    .unwrap_or_default();
-                                let pass_len = val.len().min(64);
-                                pass_buf[..pass_len].copy_from_slice(&val[..pass_len]);
-                                info!("[ble] password written ({} bytes)", pass_len);
-
-                                // Both credentials received — push config + request Connected
-                                let mut config = AppConfig::default();
-                                config.wifi_ssid[..ssid_len].copy_from_slice(&ssid_buf[..ssid_len]);
-                                config.wifi_pass[..pass_len].copy_from_slice(&pass_buf[..pass_len]);
-                                CMD_CHANNEL.send(AppCommand::UpdateConfig(config)).await;
-                                CMD_CHANNEL
-                                    .send(AppCommand::SetMode(AppMode::Connected))
-                                    .await;
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    // Send status notification on mode change
-                    if let Some(state) = rx.try_changed() {
-                        let byte = state.mode.to_byte();
-                        let _ = server.status_svc.mode.notify(&conn, &byte).await;
-
-                        if state.mode == AppMode::Idle {
-                            break;
-                        }
-                    }
+                if state.mode == AppMode::Idle {
+                    break;
                 }
             }
-        },
-    )
-    .await;
-
-    unreachable!()
+        }
+    }
 }
