@@ -66,9 +66,10 @@ esp-rtos = { version = "0.2.0", features = [
 trouble-host = { version = "0.5.0", features = [
     "defmt",
     "derive",
-    "default-packet-pool-mtu-255",
+    "default-packet-pool",
     "gatt",
-    "peripheral"
+    "peripheral",
+    "scan"
 ] }
 # this is disabled because of the above
 # bt-hci = "0.8.0"
