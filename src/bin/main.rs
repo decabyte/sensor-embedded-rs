@@ -10,199 +10,77 @@
 use panic_rtt_target as _;
 
 use defmt::info;
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
+use embassy_executor::Spawner;
+
 use esp_alloc as _;
-use esp_hal::gpio::AnyPin;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{Config, clock::CpuClock, rmt::Rmt, time::Rate};
 
-use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
-use smart_leds::{
-    RGB8, SmartLedsWriteAsync, brightness, gamma,
-    hsv::{Hsv, hsv2rgb},
+use esp_radio::ble::controller::BleConnector;
+use esp_radio::wifi;
+
+use sensor_embedded_rs::tasks::{
+    app_task::app_task, ble_task::ble_task, led_task::led_task, wifi_task::wifi_task,
 };
 
-use esp_radio::ble::controller::BleConnector;
-use trouble_host::prelude::*;
-// use bt_hci::controller::ExternalController;
-
 extern crate alloc;
-
-// Constants
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 2;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 esp_bootloader_esp_idf::esp_app_desc!();
 
-// #[gatt_server]
-// struct BLEServer {
-//     battery_service: BatteryService,
-// }
-
-// #[gatt_service(uuid = service::BATTERY)]
-// struct BatteryService {
-//     #[descriptor(uuid = descriptors::VALID_RANGE, read, value = [0, 100])]
-//     #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "level", read, value = "Battery Level")]
-//     #[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 10)]
-//     level: u8,
-
-//     #[descriptor(uuid = descriptors::MEASUREMENT_DESCRIPTION, name = "connected", read, value = "Battery Presence")]
-//     #[characteristic(
-//         uuid = "408813df-5dd4-1f87-ec11-cdb001100000",
-//         read,
-//         notify,
-//         value = false
-//     )]
-//     connected: bool,
-// }
+static RADIO_INIT: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
 
 #[allow(
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers in main"
 )]
 #[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
-    // generator version: 1.2.0
+async fn main(spawner: Spawner) {
+    // Logging
     rtt_target::rtt_init_defmt!();
 
+    // HAL initialization
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
+    // Heap initialization
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
+    // COEX needs more RAM
+    esp_alloc::heap_allocator!(size: 64 * 1024);
 
+    // Embassy initialization
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!("Embassy initialized!");
 
-    // Initialize radio stack
-    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    let radio_init =
-        RADIO.init(esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller"));
-
-    // Initialize BLE stack
-    let transport = BleConnector::new(radio_init, peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 1>::new(transport);
-
-    let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
-    info!("BLE device address = {:?}", address);
-
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let stack = trouble_host::new(ble_controller, &mut resources).set_random_address(address);
-
-    let Host {
-        mut peripheral,
-        runner,
-        ..
-    } = stack.build();
-
-    // static RUNNER: StaticCell<
-    //     Runner<'static, ExternalController<BleConnector<'static>, 1>, DefaultPacketPool>,
-    // > = StaticCell::new();
-    // let ble_runner = RUNNER.init(runner);
-
-    // info!("Starting advertising and GATT service");
-    // let server = BLEServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-    //     name: "SensorBLE",
-    //     appearance: &appearance::sensor::MULTI_SENSOR,
-    // }))
-    // .expect("Failed at starting GATT service");
-
-    // spawner.must_spawn(ble_task(runner));
-
-    // Initialize RMT and SmartLed
+    // Initialize RMT
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
         .expect("Failed to initialize RMT")
         .into_async();
 
-    // Use `spawner` to launch tasks.
-    spawner.spawn(extra_task()).ok();
-    spawner.spawn(led_task(rmt, peripherals.GPIO8.into())).ok();
+    // Initialize Radio Stack
+    let radio_init =
+        RADIO_INIT.init(esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller"));
 
-    loop {
-        info!("Tick!");
-        Timer::after(Duration::from_secs(5)).await;
-    }
-}
+    // Initialize BLE
+    let ble_connector = BleConnector::new(radio_init, peripherals.BT, Default::default()).unwrap();
 
-#[embassy_executor::task]
-async fn extra_task() {
-    loop {
-        info!("Task!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
-}
+    // Initialize WiFi
+    let (wifi_controller, interfaces) = wifi::new(radio_init, peripherals.WIFI, Default::default())
+        .expect("Failed to initialize Wi-Fi");
 
-#[allow(clippy::large_stack_frames)]
-#[embassy_executor::task]
-async fn ble_task(
-    mut runner: Runner<'static, ExternalController<BleConnector<'static>, 1>, DefaultPacketPool>,
-) {
-    _ = runner.run().await;
-}
+    // Use `spawner` to launch tasks
+    spawner.must_spawn(app_task());
+    spawner.must_spawn(led_task(rmt, peripherals.GPIO8.into()));
+    spawner.must_spawn(ble_task(ble_connector));
+    spawner.must_spawn(wifi_task(spawner, wifi_controller, interfaces.sta));
 
-/// Alternative with StaticCell:
-// #[embassy_executor::task]
-// async fn ble_task(
-//     runner: &'static mut Runner<
-//         'static,
-//         ExternalController<BleConnector<'static>, 1>,
-//         DefaultPacketPool,
-//     >,
-// ) {
-//     _ = runner.run().await;
-// }
-
-#[embassy_executor::task]
-async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
-    let mut rmt_buffer = [esp_hal::rmt::PulseCode::default(); buffer_size_async(1)];
-    let mut led = SmartLedsAdapterAsync::new(rmt.channel0, pin, &mut rmt_buffer);
-
-    let level = 10;
-    let mut color = Hsv {
-        hue: 0,
-        sat: 255,
-        val: 255,
-    };
-    let mut data: RGB8 = hsv2rgb(color);
-
-    // led init sequence
-    for n in 0..10 {
-        let init_level = if (n % 2) == 0 { level } else { 0 };
-        _ = led
-            .write(brightness(gamma([data].into_iter()), init_level))
-            .await;
-        Timer::after_millis(200).await;
-    }
-
-    // led main loop
-    loop {
-        for hue in 0..=255 {
-            color.hue = hue;
-
-            // Convert from the HSV color space (where we can easily transition from one
-            // color to the other) to the RGB color space that we can then send to the LED
-            data = hsv2rgb(color);
-
-            // When sending to the LED, we do a gamma correction first (see smart_leds
-            // documentation for details) and then limit the brightness to 10 out of 255 so
-            // that the output is not too bright.
-            _ = led
-                .write(brightness(gamma([data].into_iter()), level))
-                .await;
-
-            Timer::after_millis(50).await;
-        }
-
-        Timer::after_millis(200).await;
-    }
+    info!("All tasks spawned");
 }
 
 // References:
