@@ -2,7 +2,8 @@ use defmt::{error, info, warn};
 use static_cell::StaticCell;
 
 use embassy_executor::Spawner;
-use embassy_net::{Config, Runner, StackResources};
+use embassy_net::{Config, Runner, Stack, StackResources};
+use embassy_time::Timer;
 use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
 
 extern crate alloc;
@@ -29,7 +30,7 @@ pub async fn wifi_task(
     // Fixed seed — acceptable for embedded; replace with hardware RNG if available.
     let seed: u64 = 0x_dead_beef_cafe_1234;
     let config = Config::dhcpv4(Default::default());
-    let (_stack, runner) = embassy_net::new(device, config, resources, seed);
+    let (stack, runner) = embassy_net::new(device, config, resources, seed);
 
     spawner.must_spawn(net_runner_task(runner));
 
@@ -81,6 +82,25 @@ pub async fn wifi_task(
             }
 
             info!("[wifi] associated, waiting for DHCP lease");
+
+            while !stack.is_link_up() {
+                Timer::after_millis(500).await;
+            }
+
+            while stack.config_v4().is_none() {
+                Timer::after_millis(500).await;
+            }
+
+            if let Some(config) = stack.config_v4() {
+                info!("[wifi] IP: {}", config.address);
+                if let Some(gateway) = config.gateway {
+                    info!("[wifi] gateway: {}", gateway);
+                }
+                for dns in &config.dns_servers {
+                    info!("[wifi] DNS: {}", dns);
+                }
+            }
+
             break;
         }
 
