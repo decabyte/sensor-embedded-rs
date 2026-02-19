@@ -77,7 +77,7 @@ async fn main(spawner: Spawner) {
     // Use `spawner` to launch tasks
     spawner.must_spawn(app_task());
     spawner.must_spawn(led_task(rmt, peripherals.GPIO8.into()));
-    spawner.must_spawn(ble_task(ble_connector));
+    spawner.must_spawn(ble_task(spawner, ble_connector));
     spawner.must_spawn(wifi_task(spawner, wifi_controller, interfaces.sta));
 
     info!("All tasks spawned");

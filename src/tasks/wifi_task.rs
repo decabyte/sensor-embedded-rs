@@ -1,8 +1,9 @@
 use defmt::{error, info, warn};
+use static_cell::StaticCell;
+
 use embassy_executor::Spawner;
 use embassy_net::{Config, Runner, StackResources};
 use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
-use static_cell::StaticCell;
 
 extern crate alloc;
 
