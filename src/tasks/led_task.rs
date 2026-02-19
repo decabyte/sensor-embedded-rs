@@ -1,0 +1,68 @@
+use defmt::info;
+
+use embassy_time::Timer;
+
+use esp_hal::gpio::AnyPin;
+use esp_hal::{rmt::Rmt, time::Rate};
+
+use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
+use smart_leds::{
+    RGB8, SmartLedsWriteAsync, brightness, gamma,
+    hsv::{Hsv, hsv2rgb},
+};
+
+use crate::app::STATE_WATCH;
+
+#[embassy_executor::task]
+pub async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
+    let mut rmt_buffer = [esp_hal::rmt::PulseCode::default(); buffer_size_async(1)];
+    let mut led = SmartLedsAdapterAsync::new(rmt.channel0, pin, &mut rmt_buffer);
+
+    let level = 10;
+    let mut color = Hsv {
+        hue: 0,
+        sat: 255,
+        val: 255,
+    };
+    let mut data: RGB8 = hsv2rgb(color);
+
+    info!("[led] started");
+
+    // led init sequence
+    for n in 0..10 {
+        let init_level = if (n % 2) == 0 { level } else { 0 };
+        _ = led
+            .write(brightness(gamma([data].into_iter()), init_level))
+            .await;
+        Timer::after_millis(200).await;
+    }
+
+    // fetch app state
+    let mut rx = STATE_WATCH
+        .receiver()
+        .expect("led_task: no Watch receiver slot");
+
+    // led main loop
+    loop {
+        let _state = rx.try_get();
+
+        for hue in 0..=255 {
+            color.hue = hue;
+
+            // Convert from the HSV color space (where we can easily transition from one
+            // color to the other) to the RGB color space that we can then send to the LED
+            data = hsv2rgb(color);
+
+            // When sending to the LED, we do a gamma correction first (see smart_leds
+            // documentation for details) and then limit the brightness to 10 out of 255 so
+            // that the output is not too bright.
+            _ = led
+                .write(brightness(gamma([data].into_iter()), level))
+                .await;
+
+            Timer::after_millis(50).await;
+        }
+
+        Timer::after_millis(200).await;
+    }
+}
