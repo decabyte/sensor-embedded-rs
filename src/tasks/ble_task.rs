@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use defmt::{info, warn};
 use static_cell::StaticCell;
 
@@ -21,6 +23,8 @@ const L2CAP_CHANNELS_MAX: usize = 2;
 
 #[gatt_server(connections_max = CONNECTIONS_MAX, mutex_type = CriticalSectionRawMutex, attribute_table_size = 24)]
 struct BleServer {
+    #[allow(dead_code)]
+    #[allow(unused_variables)]
     device_info: DeviceInfoService,
     config_svc: ConfigService,
     status_svc: StatusService,
@@ -45,7 +49,7 @@ struct ConfigService {
     password: heapless::Vec<u8, 64>,
 }
 
-/// Custom Status Service — notifies current mode as a single byte.
+/// Custom Status Service — notifies current mode and wifi state.
 #[gatt_service(uuid = "4368616e-6e65-6c73-5374-617475730001")]
 struct StatusService {
     #[characteristic(
@@ -55,6 +59,13 @@ struct StatusService {
         value = 0u8
     )]
     mode: u8,
+    #[characteristic(
+        uuid = "4368616e-6e65-6c73-5374-617475730003",
+        read,
+        notify,
+        value = 0u8
+    )]
+    wifi_state: u8,
 }
 
 static RESOURCES: StaticCell<
@@ -170,10 +181,12 @@ pub async fn ble_task(spawner: Spawner, connector: BleConnector<'static>) -> ! {
 
         info!("[ble] connected");
 
-        // Notify current mode immediately
+        // Notify current mode and wifi_state immediately
         if let Some(state) = rx.try_changed() {
             let byte = state.mode.to_byte();
             let _ = server.status_svc.mode.notify(&conn, &byte).await;
+            let wifi_byte = state.wifi_state as u8;
+            let _ = server.status_svc.wifi_state.notify(&conn, &wifi_byte).await;
         }
 
         let mut ssid_len = 0usize;
@@ -216,15 +229,12 @@ pub async fn ble_task(spawner: Spawner, connector: BleConnector<'static>) -> ! {
 
                                 info!("[ble] password written ({} bytes)", pass_len);
 
-                                // Both credentials received — push config + request Connected
+                                // Both credentials received — push config, app_task handles mode transition
                                 let mut config = AppConfig::default();
                                 config.wifi_ssid[..ssid_len].copy_from_slice(&ssid_buf[..ssid_len]);
                                 config.wifi_pass[..pass_len].copy_from_slice(&pass_buf[..pass_len]);
 
                                 CMD_CHANNEL.send(AppCommand::UpdateConfig(config)).await;
-                                CMD_CHANNEL
-                                    .send(AppCommand::SetMode(AppMode::Connected))
-                                    .await;
                             }
                         }
                         _ => {}
@@ -233,10 +243,12 @@ pub async fn ble_task(spawner: Spawner, connector: BleConnector<'static>) -> ! {
                 _ => {}
             }
 
-            // Send status notification on mode change
+            // Send status notification on mode/wifi_state change
             if let Some(state) = rx.try_changed() {
                 let byte = state.mode.to_byte();
                 let _ = server.status_svc.mode.notify(&conn, &byte).await;
+                let wifi_byte = state.wifi_state as u8;
+                let _ = server.status_svc.wifi_state.notify(&conn, &wifi_byte).await;
 
                 if state.mode == AppMode::Idle {
                     break;

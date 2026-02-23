@@ -2,13 +2,13 @@ use defmt::{error, info, warn};
 use static_cell::StaticCell;
 
 use embassy_executor::Spawner;
-use embassy_net::{Config, Runner, Stack, StackResources};
+use embassy_net::{Config, Runner, StackResources};
 use embassy_time::Timer;
 use esp_radio::wifi::{ClientConfig, ModeConfig, WifiController, WifiDevice};
 
 extern crate alloc;
 
-use crate::app::{AppCommand, AppMode, CMD_CHANNEL, STATE_WATCH};
+use crate::app::{AppCommand, AppMode, CMD_CHANNEL, STATE_WATCH, WifiState};
 
 const NET_SOCKETS: usize = 4;
 
@@ -41,10 +41,10 @@ pub async fn wifi_task(
     info!("[wifi] started");
 
     loop {
-        // Wait until Connected mode is requested ────────────────────────────
+        // Wait until Infrastructure mode is requested ───────────────────────────
         loop {
             let state = rx.changed().await;
-            if state.mode != AppMode::Connected {
+            if state.mode != AppMode::Infrastructure {
                 continue;
             }
 
@@ -53,9 +53,15 @@ pub async fn wifi_task(
 
             if ssid.is_empty() {
                 warn!("[wifi] SSID is empty, cannot connect");
-                CMD_CHANNEL.send(AppCommand::SetMode(AppMode::Local)).await;
+                CMD_CHANNEL
+                    .send(AppCommand::SetMode(AppMode::Advertising))
+                    .await;
                 continue;
             }
+
+            CMD_CHANNEL
+                .send(AppCommand::UpdateWifiState(WifiState::Connecting))
+                .await;
 
             let client_cfg = ClientConfig::default()
                 .with_ssid(alloc::string::String::from(ssid))
@@ -63,13 +69,23 @@ pub async fn wifi_task(
 
             if let Err(e) = controller.set_config(&ModeConfig::Client(client_cfg)) {
                 error!("[wifi] set_config: {:?}", e);
-                CMD_CHANNEL.send(AppCommand::SetMode(AppMode::Local)).await;
+                CMD_CHANNEL
+                    .send(AppCommand::UpdateWifiState(WifiState::Error))
+                    .await;
+                CMD_CHANNEL
+                    .send(AppCommand::SetMode(AppMode::Advertising))
+                    .await;
                 continue;
             }
 
             if let Err(e) = controller.start_async().await {
                 error!("[wifi] start: {:?}", e);
-                CMD_CHANNEL.send(AppCommand::SetMode(AppMode::Local)).await;
+                CMD_CHANNEL
+                    .send(AppCommand::UpdateWifiState(WifiState::Error))
+                    .await;
+                CMD_CHANNEL
+                    .send(AppCommand::SetMode(AppMode::Advertising))
+                    .await;
                 continue;
             }
 
@@ -77,7 +93,12 @@ pub async fn wifi_task(
             if let Err(e) = controller.connect_async().await {
                 error!("[wifi] connect: {:?}", e);
                 let _ = controller.stop_async().await;
-                CMD_CHANNEL.send(AppCommand::SetMode(AppMode::Local)).await;
+                CMD_CHANNEL
+                    .send(AppCommand::UpdateWifiState(WifiState::Error))
+                    .await;
+                CMD_CHANNEL
+                    .send(AppCommand::SetMode(AppMode::Advertising))
+                    .await;
                 continue;
             }
 
@@ -101,16 +122,23 @@ pub async fn wifi_task(
                 }
             }
 
+            CMD_CHANNEL
+                .send(AppCommand::UpdateWifiState(WifiState::Connected))
+                .await;
+
             break;
         }
 
-        // Wait until mode leaves Connected, then disconnect ──────────────────
+        // Wait until mode leaves Infrastructure, then disconnect ──────────────────
         loop {
             let state = rx.changed().await;
-            if state.mode != AppMode::Connected {
+            if state.mode != AppMode::Infrastructure {
                 info!("[wifi] mode={}, disconnecting", state.mode);
                 let _ = controller.disconnect_async().await;
                 let _ = controller.stop_async().await;
+                CMD_CHANNEL
+                    .send(AppCommand::UpdateWifiState(WifiState::Disconnected))
+                    .await;
                 break;
             }
         }

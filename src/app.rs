@@ -5,18 +5,26 @@ use embassy_sync::watch::Watch;
 #[derive(Clone, Copy, PartialEq, defmt::Format)]
 pub enum AppMode {
     Idle,
-    Local,
-    Connected,
+    Advertising,
+    Infrastructure,
 }
 
 impl AppMode {
     pub fn to_byte(&self) -> u8 {
         match self {
             Self::Idle => 0,
-            Self::Local => 1,
-            Self::Connected => 2,
+            Self::Advertising => 1,
+            Self::Infrastructure => 2,
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, defmt::Format)]
+pub enum WifiState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error,
 }
 
 #[derive(Clone, Copy, defmt::Format)]
@@ -48,6 +56,7 @@ impl AppConfig {
 pub struct AppState {
     pub mode: AppMode,
     pub config: AppConfig,
+    pub wifi_state: WifiState,
 }
 
 impl AppState {
@@ -55,6 +64,7 @@ impl AppState {
         Self {
             mode: AppMode::Idle,
             config: AppConfig::default(),
+            wifi_state: WifiState::Disconnected,
         }
     }
 }
@@ -64,6 +74,7 @@ impl AppState {
 pub enum AppCommand {
     SetMode(AppMode),
     UpdateConfig(AppConfig),
+    UpdateWifiState(WifiState),
 }
 
 // app_task reads commands from this; senders never need to queue more than 1-2 at a time
