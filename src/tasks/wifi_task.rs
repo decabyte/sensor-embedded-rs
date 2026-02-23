@@ -1,4 +1,4 @@
-use defmt::{error, info, warn};
+use defmt::{error, info};
 use static_cell::StaticCell;
 
 use embassy_executor::Spawner;
@@ -51,14 +51,6 @@ pub async fn wifi_task(
             let ssid = state.config.ssid_str();
             let pass = state.config.pass_str();
 
-            if ssid.is_empty() {
-                warn!("[wifi] SSID is empty, cannot connect");
-                CMD_CHANNEL
-                    .send(AppCommand::SetMode(AppMode::Advertising))
-                    .await;
-                continue;
-            }
-
             CMD_CHANNEL
                 .send(AppCommand::UpdateWifiState(WifiState::Connecting))
                 .await;
@@ -72,9 +64,6 @@ pub async fn wifi_task(
                 CMD_CHANNEL
                     .send(AppCommand::UpdateWifiState(WifiState::Error))
                     .await;
-                CMD_CHANNEL
-                    .send(AppCommand::SetMode(AppMode::Advertising))
-                    .await;
                 continue;
             }
 
@@ -82,9 +71,6 @@ pub async fn wifi_task(
                 error!("[wifi] start: {:?}", e);
                 CMD_CHANNEL
                     .send(AppCommand::UpdateWifiState(WifiState::Error))
-                    .await;
-                CMD_CHANNEL
-                    .send(AppCommand::SetMode(AppMode::Advertising))
                     .await;
                 continue;
             }
@@ -95,9 +81,6 @@ pub async fn wifi_task(
                 let _ = controller.stop_async().await;
                 CMD_CHANNEL
                     .send(AppCommand::UpdateWifiState(WifiState::Error))
-                    .await;
-                CMD_CHANNEL
-                    .send(AppCommand::SetMode(AppMode::Advertising))
                     .await;
                 continue;
             }

@@ -1,12 +1,11 @@
 use defmt::{info, warn};
-use embassy_executor::task;
 use embassy_time::{Duration, Timer};
 
-use crate::app::{AppCommand, AppMode, AppState, CMD_CHANNEL, STATE_WATCH};
+use crate::app::{AppCommand, AppMode, AppState, CMD_CHANNEL, STATE_WATCH, WifiState};
 
 const CONFIG_DEBOUNCE_MS: u64 = 500;
 
-#[task]
+#[embassy_executor::task]
 pub async fn app_task() -> ! {
     let sender = STATE_WATCH.sender();
 
@@ -68,6 +67,16 @@ pub async fn app_task() -> ! {
                     );
                     state.wifi_state = new_wifi_state;
                     sender.send(state);
+
+                    // Transition to Advertising if WiFi fails while in Infrastructure
+                    if (new_wifi_state == WifiState::Error
+                        || new_wifi_state == WifiState::Disconnected)
+                        && state.mode == AppMode::Infrastructure
+                    {
+                        info!("[app] wifi error/disconnected, transitioning to Advertising");
+                        state.mode = AppMode::Advertising;
+                        sender.send(state);
+                    }
                 }
             }
         }
