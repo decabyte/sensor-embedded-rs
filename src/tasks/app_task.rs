@@ -1,15 +1,17 @@
 use defmt::{info, warn};
 use embassy_executor::task;
+use embassy_time::{Duration, Timer};
 
 use crate::app::{AppCommand, AppMode, AppState, CMD_CHANNEL, STATE_WATCH};
+
+const CONFIG_DEBOUNCE_MS: u64 = 500;
 
 #[task]
 pub async fn app_task() -> ! {
     let sender = STATE_WATCH.sender();
 
-    // Publish initial state so all receivers can get their first value
     let mut state = AppState::default();
-    state.mode = AppMode::Local;
+    state.mode = AppMode::Advertising;
     sender.send(state);
 
     info!("[app] started, mode = {}", state.mode);
@@ -23,14 +25,13 @@ pub async fn app_task() -> ! {
                 }
                 info!("[app] mode {} -> {}", state.mode, new_mode);
 
-                // Validate transition
                 let valid = matches!(
                     (state.mode, new_mode),
-                    (AppMode::Idle, AppMode::Local)
-                        | (AppMode::Local, AppMode::Idle)
-                        | (AppMode::Local, AppMode::Connected)
-                        | (AppMode::Connected, AppMode::Local)
-                        | (AppMode::Connected, AppMode::Idle)
+                    (AppMode::Idle, AppMode::Advertising)
+                        | (AppMode::Advertising, AppMode::Idle)
+                        | (AppMode::Advertising, AppMode::Infrastructure)
+                        | (AppMode::Infrastructure, AppMode::Advertising)
+                        | (AppMode::Infrastructure, AppMode::Idle)
                 );
 
                 if valid {
@@ -44,9 +45,30 @@ pub async fn app_task() -> ! {
                 }
             }
             AppCommand::UpdateConfig(new_config) => {
-                info!("[app] config updated");
+                info!("[app] config updated, debouncing {}ms", CONFIG_DEBOUNCE_MS);
                 state.config = new_config;
                 sender.send(state);
+
+                Timer::after(Duration::from_millis(CONFIG_DEBOUNCE_MS)).await;
+
+                let ssid = state.config.ssid_str();
+                if !ssid.is_empty() && state.mode == AppMode::Advertising {
+                    info!(
+                        "[app] valid credentials after debounce, transitioning to Infrastructure"
+                    );
+                    state.mode = AppMode::Infrastructure;
+                    sender.send(state);
+                }
+            }
+            AppCommand::UpdateWifiState(new_wifi_state) => {
+                if new_wifi_state != state.wifi_state {
+                    info!(
+                        "[app] wifi_state {} -> {}",
+                        state.wifi_state, new_wifi_state
+                    );
+                    state.wifi_state = new_wifi_state;
+                    sender.send(state);
+                }
             }
         }
     }

@@ -3,7 +3,7 @@ use defmt::info;
 use embassy_time::Timer;
 
 use esp_hal::gpio::AnyPin;
-use esp_hal::{rmt::Rmt, time::Rate};
+use esp_hal::rmt::Rmt;
 
 use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
 use smart_leds::{

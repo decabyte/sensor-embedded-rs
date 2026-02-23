@@ -94,24 +94,33 @@ The codebase includes commented infrastructure for:
 
 ```plain
 sensor-embedded-rs/
+├── .agents/
+│   └── skills/                 # Agent skills for AI coding assistants
 ├── .cargo/
-│   └── config.toml          # probe-rs runner configuration
+│   └── config.toml             # probe-rs runner configuration
+├── .clippy.toml                # Clippy linting rules
 ├── src/
 │   ├── bin/
-│   │   └── main.rs         # Main application entry point
-│   └── lib.rs              # Library interface (minimal)
-├── Cargo.toml              # Dependencies and features
-├── rust-toolchain.toml     # Required Rust toolchain
-├── build.rs                # Build script with linker configuration
-└── .clippy.toml           # Clippy linting rules
+│   │   └── main.rs             # Entry point, HAL init, task spawning
+│   ├── lib.rs                  # Library root
+│   ├── app.rs                  # App state, commands, channels
+│   └── tasks/                  # Async tasks (led, wifi, ble, app)
+├── tests/
+│   └── hello_test.rs           # Embedded test suite
+├── build.rs                    # Build script with linker configuration
+├── Cargo.toml                  # Dependencies and features
+└── rust-toolchain.toml         # Required Rust toolchain
 ```
 
 ### Key Files
 
-- `src/bin/main.rs`: Main application with LED demo and Embassy initialization
-- `Cargo.toml`: Feature flags for ESP32-C6, BLE, WiFi, and debugging
+- `src/bin/main.rs`: Entry point with HAL init and task spawning
+- `src/app.rs`: App state, commands, and inter-task channels
+- `src/tasks/`: Embassy async tasks (led, wifi, ble, app)
+- `Cargo.toml`: Dependencies and features for ESP32-C6, BLE, WiFi
 - `.cargo/config.toml`: probe-rs runner and build configuration
 - `build.rs`: Linker script management and error handling
+- `.clippy.toml`: Clippy linting rules
 
 ## 🔧 Development
 
