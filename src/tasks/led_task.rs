@@ -11,7 +11,12 @@ use smart_leds::{
     hsv::{Hsv, hsv2rgb},
 };
 
-use crate::app::STATE_WATCH;
+use crate::app::{AppMode, STATE_WATCH};
+
+const HUE_INIT: u8 = 43; // Yellow
+const HUE_IDLE: u8 = 213; // Pink
+const HUE_ADVERTISING: u8 = 171; // Blue
+const HUE_INFRASTRUCTURE: u8 = 85; // Green
 
 #[embassy_executor::task]
 pub async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
@@ -20,7 +25,7 @@ pub async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
 
     let level = 10;
     let mut color = Hsv {
-        hue: 0,
+        hue: HUE_INIT,
         sat: 255,
         val: 255,
     };
@@ -44,15 +49,21 @@ pub async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
 
     // led main loop
     loop {
-        let _state = rx.try_get();
+        let state = rx.try_get();
 
-        for hue in 0..=255 {
-            color.hue = hue;
+        // Set color based on AppMode
+        let mode = state.map(|s| s.mode).unwrap_or(AppMode::Advertising);
+        color.hue = match mode {
+            AppMode::Idle => HUE_IDLE,
+            AppMode::Advertising => HUE_ADVERTISING,
+            AppMode::Infrastructure => HUE_INFRASTRUCTURE,
+        };
 
-            // Convert from the HSV color space (where we can easily transition from one
-            // color to the other) to the RGB color space that we can then send to the LED
-            data = hsv2rgb(color);
+        // Convert from the HSV color space (where we can easily transition from one
+        // color to the other) to the RGB color space that we can then send to the LED
+        data = hsv2rgb(color);
 
+        for level in 0..=15 {
             // When sending to the LED, we do a gamma correction first (see smart_leds
             // documentation for details) and then limit the brightness to 10 out of 255 so
             // that the output is not too bright.
@@ -60,9 +71,17 @@ pub async fn led_task(rmt: Rmt<'static, esp_hal::Async>, pin: AnyPin<'static>) {
                 .write(brightness(gamma([data].into_iter()), level))
                 .await;
 
-            Timer::after_millis(50).await;
+            Timer::after_millis(100).await;
         }
 
-        Timer::after_millis(200).await;
+        for level in (0..=15).rev() {
+            _ = led
+                .write(brightness(gamma([data].into_iter()), level))
+                .await;
+
+            Timer::after_millis(100).await;
+        }
+
+        Timer::after_millis(400).await;
     }
 }
