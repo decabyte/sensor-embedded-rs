@@ -1,6 +1,8 @@
 # Sensor Embedded Rust
 
-Embedded firmware component of the Sensor Platform ecosystem, designed to run on ESP32-C6 microcontrollers. This project provides the edge computing foundation for sensor data collection and wireless communication in distributed sensor networks.
+Embedded firmware component of the Sensor Platform ecosystem, designed to run on ESP32-C6 microcontrollers.
+This project provides the edge computing foundation for sensor data collection and
+wireless communication in distributed sensor networks.
 
 ## 🏗️ Ecosystem Context
 
