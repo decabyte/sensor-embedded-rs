@@ -168,6 +168,7 @@ Future releases will expand capabilities to support:
 - **[probe-rs](https://probe.rs/)** - Debugging and flashing tooling
 - **[esp-hal](https://github.com/esp-rs/esp-hal)** - Hardware abstraction layer
 - **[defmt](https://defmt.ferrous-systems.com/)** - Efficient logging framework
+- **[ESP32-C6 Reference](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/get-started/index.html)** - Espressif ESP32-C6 Reference
 
 ### Related Projects
 
